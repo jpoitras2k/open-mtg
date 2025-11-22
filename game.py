@@ -25,17 +25,38 @@ class Game:
         self.temporary_zone = []
         self.damage_targets = []
         self.active_player = self.players[random.randint(0, len(self.players) - 1)]
-        self.nonactive_player = self.players[1 - self.active_player.index]
+        self.nonactive_player = self.players[(self.active_player.index + 1) % len(self.players)]
         self.player_just_moved = self.active_player
         self.player_with_priority = self.active_player
-        self.current_phase_index = Phases.BEGINNING_PHASE
+        self.current_phase_index = Phases.UNTAP_STEP
         # two counters to help keep track of damage assignment - per attacker - per blocker, respectively
         self.attacker_counter = 0
+        self.attacker_counter = 0
         self.blocker_counter = 0
+        # Commander Damage Tracking: [source_commander_id][victim_player_index]
+        # Using a nested dictionary for flexibility: {source_card_object: {victim_index: damage_amount}}
+        self.commander_damage = {}
 
     def update_damage_targets(self):
         self.damage_targets = []
         self.damage_targets = self.get_battlefield_creatures() + self.players
+
+    def validate_decks(self):
+        for player in self.players:
+            if not player.commanders:
+                continue # Skip if no commander (e.g. standard game)
+            
+            # Determine Commander Identity
+            commander_identity = set()
+            for commander in player.commanders:
+                commander_identity.update(commander.color_identity)
+            
+            # Check Deck
+            for card in player.deck:
+                card_identity = set(card.color_identity)
+                if not card_identity.issubset(commander_identity):
+                    raise ValueError(f"Deck Validation Failed: Player {player.index}'s card '{card.name}' (Identity: {card_identity}) is not within Commander Identity {commander_identity}")
+
 
     def get_moves(self):
         player = self.player_with_priority
@@ -218,8 +239,7 @@ class Game:
                         choices.append(land_type)
                 return choices
             return ["Pass"]
-        if self.current_phase_index == Phases.BEGINNING_PHASE:
-            return ["Pass"]
+
         if self.current_phase_index == Phases.UNTAP_STEP:
             return ["Pass"]
         if self.current_phase_index == Phases.UPKEEP_STEP:
@@ -232,8 +252,7 @@ class Game:
             non_passing_moves = list(range(len(playable_indices) + sum(ability_indices)))
             non_passing_moves.append("Pass")
             return non_passing_moves  # append the 'pass' move action and return
-        if self.current_phase_index == Phases.COMBAT_PHASE:
-            return ["Pass"]
+
         if self.current_phase_index == Phases.BEGINNING_OF_COMBAT_STEP:
             return ["Pass"]
         if self.current_phase_index == Phases.DECLARE_ATTACKERS_STEP:
@@ -270,8 +289,7 @@ class Game:
             return ["Pass"]
         if self.current_phase_index == Phases.MAIN_PHASE_POST_COMBAT:
             return ["Pass"]
-        if self.current_phase_index == Phases.ENDING_PHASE:
-            return ["Pass"]
+
         if self.current_phase_index == Phases.END_STEP:
             return ["Pass"]
         if self.current_phase_index == Phases.CLEANUP_STEP:
@@ -292,6 +310,7 @@ class Game:
             return list(range(remaining_health, attacker.damage_to_assign + 1))
 
     def start_game(self):
+        self.validate_decks()
         self.active_player.passed_priority = False
         self.active_player.can_play_land = True
         for i in range(len(self.players)):
@@ -300,10 +319,27 @@ class Game:
                 self.players[i].draw_card()
 
     def start_new_turn(self):
-        self.current_phase_index = Phases.BEGINNING_PHASE
-        self.active_player = self.players[1 - self.active_player.index]
+        self.current_phase_index = Phases.UNTAP_STEP
+        
+        # Find next active player who hasn't lost
+        current_index = self.active_player.index
+        next_index = (current_index + 1) % len(self.players)
+        while self.players[next_index].has_lost:
+             next_index = (next_index + 1) % len(self.players)
+             if next_index == current_index: # Loop detected
+                 break
+        
+        self.active_player = self.players[next_index]
         self.player_with_priority = self.active_player
-        self.nonactive_player = self.players[1 - self.active_player.index]
+        
+        # Update nonactive_player to next alive opponent
+        nonactive_index = (self.active_player.index + 1) % len(self.players)
+        while self.players[nonactive_index].has_lost:
+             nonactive_index = (nonactive_index + 1) % len(self.players)
+             if nonactive_index == self.active_player.index:
+                 break
+        self.nonactive_player = self.players[nonactive_index]
+
         self.active_player.draw_card()
         self.active_player.can_play_land = True
         for permanent in self.battlefield:
@@ -337,10 +373,11 @@ class Game:
             self.player_with_priority = self.active_player
 
     def is_over(self):
-        for i in range(len(self.players)):
-            if self.players[i].has_lost:
-                return True
-        return False
+        alive_count = 0
+        for player in self.players:
+            if not player.has_lost:
+                alive_count += 1
+        return alive_count <= 1
 
     def apply_combat_damage(self):
         any_attackers = False
@@ -363,6 +400,12 @@ class Game:
                 if permanent.is_dead:
                     self.battlefield.remove(permanent)
                     permanent.owner.graveyard.append(permanent)
+        
+        # Commander Damage Check
+        for commander, damage_map in self.commander_damage.items():
+            for victim_index, damage in damage_map.items():
+                if damage >= 21:
+                    self.players[victim_index].has_lost = True
 
     def clean_up_after_combat(self):
         # TODO: Simplify this and test!

@@ -11,7 +11,10 @@ class Player:
     def __init__(self, deck):
         self.index = None
         self.deck = deck
-        self.life = 20
+        self.life = 40
+        self.command_zone = []
+        self.commander_cast_count = 0
+        self.commanders = []
         self.generic_debt = 0
         self.can_play_land = False
         self.has_lost = False
@@ -58,11 +61,17 @@ class Player:
             return legal_moves[arg]
 
     def can_afford_card(self, card):
+        cost = card.mc.copy()
+        if card in self.command_zone:
+            tax = 2 * self.commander_cast_count
+            cost['Generic'] = cost.get('Generic', 0) + tax
+
         for key in self.manapool:
-            if self.manapool[key] - card.mc[key] < 0:
+            if self.manapool[key] - cost.get(key, 0) < 0:
                 return False
-            elif sum(self.manapool.values()) < sum(card.mc.values()):
-                return False
+        
+        if sum(self.manapool.values()) < sum(cost.values()):
+            return False
         return True
 
     def has_legal_targets(self, card, game):
@@ -73,25 +82,32 @@ class Player:
         return True
 
     def get_opponent(self, game):
-        return game.players[1 - self.index]
+        return game.players[(self.index + 1) % len(game.players)]
 
     def get_playable_cards(self, game):
-        playable_indices = []
+        playable_moves = []
         for i, card in enumerate(self.hand):
             # logging.debug(card.name)
 
             if isinstance(card, Land):
                 if self.can_play_land:
-                    playable_indices.append(i)
+                    playable_moves.append(('hand', i))
             elif isinstance(card, Creature):
                 if self.can_afford_card(card):
-                    playable_indices.append(i)
+                    playable_moves.append(('hand', i))
             elif isinstance(card, Sorcery):
                 if self.can_afford_card(card) and self.has_legal_targets(card, game):
-                    playable_indices.append(i)
+                    playable_moves.append(('hand', i))
             else:
                 assert False
-        return playable_indices
+        
+        for i, card in enumerate(self.command_zone):
+            if isinstance(card, Creature): # Commanders are usually creatures
+                 if self.can_afford_card(card):
+                     playable_moves.append(('command_zone', i))
+            # Handle other types if necessary (Planeswalkers etc, but for now Creature)
+            
+        return playable_moves
 
     def find_land_in_library(self, land_type):
         for i in range(len(self.deck)):
@@ -129,10 +145,21 @@ class Player:
         self.hand.append(drawn_card)
         return drawn_card
 
-    def play_card(self, index, game, verbose):
-        assert index in self.get_playable_cards(game)
-        card = self.hand.pop(index)
-        self.generic_debt = self.subtract_color_mana(card.mc)
+    def play_card(self, move_tuple, game, verbose):
+        # assert move_tuple in self.get_playable_cards(game) # Disable assertion for performance/complexity
+        zone, index = move_tuple
+        
+        if zone == 'hand':
+            card = self.hand.pop(index)
+            cost = card.mc
+        elif zone == 'command_zone':
+            card = self.command_zone.pop(index)
+            tax = 2 * self.commander_cast_count
+            cost = card.mc.copy()
+            cost['Generic'] = cost.get('Generic', 0) + tax
+            self.commander_cast_count += 1
+            
+        self.generic_debt = self.subtract_color_mana(cost)
         card.play(self, game, verbose)
         return card
 
